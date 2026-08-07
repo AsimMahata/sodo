@@ -1,0 +1,31 @@
+# venv
+.venv/
+venv/
+ENV/
+
+# build & distribution artefacts
+*.egg-info/
+dist/
+build/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# bundled FFmpeg binaries directory (large; redistribute separately)
+sodo/bin/
+
+# local sodo workspaces (workspace metadata databases)
+.sodo/
+
+# local temporary and fix files
+fix.md
+
+# editor configurations
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
