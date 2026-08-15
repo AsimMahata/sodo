@@ -29,14 +29,25 @@ echo.
 echo [1/2] Checking Python environment...
 where pip >nul 2>nul
 if %ERRORLEVEL% neq 0 (
-    echo [ERROR] 'pip' was not found in PATH. Please install Python from https://python.org
-    exit /b 1
+    where py >nul 2>nul
+    if %ERRORLEVEL% neq 0 (
+        where python >nul 2>nul
+        if %ERRORLEVEL% neq 0 (
+            echo [ERROR] 'pip' or 'python' was not found in PATH. Please install Python from https://python.org
+            exit /b 1
+        )
+    )
 )
-echo       Python and pip detected.
+echo       Python environment detected.
 
 echo.
 echo [2/2] Installing sodo package...
-powershell -NoProfile -Command "Set-Location -LiteralPath '%~dp0'; pip install -e ."
+where pip >nul 2>nul
+if %ERRORLEVEL% equ 0 (
+    pip install -e .
+) else (
+    py -m pip install -e .
+)
 if %ERRORLEVEL% neq 0 (
     echo [ERROR] Installation failed.
     exit /b 1

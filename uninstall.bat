@@ -17,7 +17,13 @@ if "%1" neq "-y" if "%1" neq "--yes" (
 
 echo.
 echo [*] Removing sodo package...
-powershell -NoProfile -Command "pip uninstall -y sodo"
+where pip >nul 2>nul
+if %ERRORLEVEL% equ 0 (
+    pip uninstall -y sodo
+) else (
+    py -m pip uninstall -y sodo
+)
+
 echo.
 echo ======================================================================
 echo   [+] Successfully uninstalled sodo.
