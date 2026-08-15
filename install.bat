@@ -11,7 +11,7 @@ echo     - Python 3.10+ in PATH
 echo     - pip in PATH
 echo     - FFmpeg (placed in tools/sodo/bin/ or in PATH for audio conversion)
 echo.
-echo [!] Tips:
+echo [*] Tips:
 echo     - Downloads high quality audio with ID3 metadata tags
 echo     - Run 'sodo --help' to see quick-start commands
 echo     - Run 'sodo [url]' to download video as MP3
