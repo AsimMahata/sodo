@@ -1,0 +1,5 @@
+name = "sodo"
+description = "Task management and todo tracker CLI"
+version = "0.1.0"
+author = "Asim Mahata"
+tags = ["todo", "productivity", "cli"]
