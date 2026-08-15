@@ -15,6 +15,7 @@ echo [!] Tips:
 echo     - Downloads high quality audio with ID3 metadata tags
 echo     - Run 'sodo --help' to see quick-start commands
 echo     - Run 'sodo [url]' to download video as MP3
+echo     - If install fails due to permissions, run with 'sudow install.bat' (run 'tom install sudow' to get sudow)
 echo.
 
 if "%1" neq "-y" if "%1" neq "--yes" (
@@ -49,7 +50,7 @@ if %ERRORLEVEL% equ 0 (
     py -m pip install -e .
 )
 if %ERRORLEVEL% neq 0 (
-    echo [ERROR] Installation failed.
+    echo [ERROR] Installation failed. If this is a permission issue, run with 'sudow install.bat' (or install sudow via 'tom install sudow').
     exit /b 1
 )
 
