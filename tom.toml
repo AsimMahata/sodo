@@ -9,7 +9,7 @@ requirements = [
     "ffmpeg (optional for audio conversion)"
 ]
 install_steps = [
-    "pip install --no-build-isolation -e ."
+    "pip install -e ."
 ]
 uninstall_steps = [
     "pip uninstall -y sodo"
