@@ -22,18 +22,28 @@ _BIN_DIR = Path.home() / "sodo" / "bin"
 
 
 def _ffmpeg_dir() -> str | None:
-    """Return the ffmpeg directory path (from home dir sodo/bin or package bin), or None if not present."""
+    """Return the ffmpeg directory path (prioritizing tools/sodo/bin, ~/tools/sodo/bin, package bin), or None."""
     exe_suffix = ".exe" if sys.platform == "win32" else ""
-    
-    # 1. Check user home dir: ~/sodo/bin (_BIN_DIR)
-    if (_BIN_DIR / f"ffmpeg{exe_suffix}").exists() and (_BIN_DIR / f"ffprobe{exe_suffix}").exists():
-        return str(_BIN_DIR)
-        
-    # 2. Check bundled package directory: sodo/bin
-    pkg_bin = Path(__file__).parent / "bin"
-    if (pkg_bin / f"ffmpeg{exe_suffix}").exists() and (pkg_bin / f"ffprobe{exe_suffix}").exists():
-        return str(pkg_bin)
-        
+
+    candidates = [
+        # 1. Root of sodo repo (e.g. tools/sodo/bin)
+        Path(__file__).resolve().parent.parent / "bin",
+        # 2. ~/tools/sodo/bin
+        Path.home() / "tools" / "sodo" / "bin",
+        # 3. ~/projects/tools/sodo/bin
+        Path.home() / "projects" / "tools" / "sodo" / "bin",
+        # 4. ~/sodo/bin
+        _BIN_DIR,
+        # 5. sodo/sodo/bin (package level)
+        Path(__file__).parent / "bin",
+    ]
+
+    for candidate in candidates:
+        ffmpeg_file = candidate / f"ffmpeg{exe_suffix}"
+        ffprobe_file = candidate / f"ffprobe{exe_suffix}"
+        if ffmpeg_file.is_file() and ffprobe_file.is_file():
+            return str(candidate)
+
     return None
 
 
