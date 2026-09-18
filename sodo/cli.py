@@ -818,7 +818,12 @@ def _run_history_update() -> None:
         click.echo(click.style("  All records already have titles.\n", fg="green"))
         return
     click.echo(click.style(f"  Fetching titles for {len(missing)} record(s)\u2026\n", fg="yellow"))
-    with _ydl.YoutubeDL({"quiet": True, "no_warnings": True, "skip_download": True}) as ydl:
+    with _ydl.YoutubeDL({
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "js_runtimes": {"node": {}, "deno": {}, "quickjs": {}},
+    }) as ydl:
         for rec in missing:
             try:
                 info  = ydl.extract_info(rec["url"], download=False)
@@ -877,6 +882,43 @@ def _ensure_ffmpeg() -> None:
         else:
             click.echo(click.style("  ✗ FFmpeg is required but not found in PATH or ~/sodo/bin. Run 'sodo --install' to download it.", fg="red"))
             sys.exit(1)
+
+def _pick_format() -> str:
+    """Interactively prompt user to choose a download format."""
+    click.echo(click.style("\n  Available formats:\n", fg="cyan", bold=True))
+    format_items = list(FORMATS.items())
+    for idx, (fmt_key, info) in enumerate(format_items, 1):
+        is_def = (fmt_key == DEFAULT_FMT)
+        type_str = f"[{info['type']}]"
+        desc = info["desc"]
+        click.echo(
+            f"    {click.style(str(idx), fg='yellow', bold=True)}. "
+            f"{click.style(info['label'], fg='green' if is_def else 'white', bold=True):<8} "
+            f"{click.style(type_str, fg='bright_black'):<9} "
+            f"{desc}"
+        )
+    click.echo("")
+
+    choices_help = f"1-{len(format_items)} or name"
+    while True:
+        val = click.prompt(
+            click.style(f"  Select format [{choices_help}]", fg="cyan"),
+            default=DEFAULT_FMT,
+            show_default=True,
+        ).strip().lower()
+
+        if not val:
+            return DEFAULT_FMT
+
+        if val.isdigit():
+            num = int(val)
+            if 1 <= num <= len(format_items):
+                return format_items[num - 1][0]
+
+        if val in FORMATS:
+            return val
+
+        click.echo(click.style(f"  Invalid format '{val}'. Choose 1-{len(format_items)} or one of: {', '.join(FORMATS)}", fg="red"))
 
 
 # ---------------------------------------------------------------------------

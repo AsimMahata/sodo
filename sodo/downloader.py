@@ -212,6 +212,11 @@ def build_opts_for_format(
         "quiet":            quiet,
         "no_warnings":      quiet,
         "keepvideo":        False,
+        "js_runtimes": {
+            "node": {},
+            "deno": {},
+            "quickjs": {},
+        },
     }
 
     ffmpeg_dir = _ffmpeg_dir()

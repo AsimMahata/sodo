@@ -8,7 +8,7 @@ setup(
     packages=find_packages(include=["sodo", "sodo.*"]),
     install_requires=[
         "click>=8.0",
-        "yt-dlp>=2024.1.0",
+        "yt-dlp>=2026.8.19",
     ],
     entry_points={
         "console_scripts": [
