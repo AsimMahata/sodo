@@ -10,5 +10,5 @@ if sys.platform == "win32":
     if hasattr(sys.stderr, "reconfigure"):
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __author__ = "asim"

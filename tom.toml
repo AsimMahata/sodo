@@ -1,8 +1,8 @@
 name = "sodo"
-description = "YouTube → MP3 downloader CLI"
-version = "0.1.0"
+description = "YouTube → MP3 & MP4 downloader CLI"
+version = "0.2.0"
 author = "Asim Mahata"
-tags = ["youtube", "mp3", "downloader", "media", "cli"]
+tags = ["youtube", "mp3", "mp4", "downloader", "playlist", "media", "cli"]
 requirements = [
     "Python 3.10+",
     "pip in PATH",

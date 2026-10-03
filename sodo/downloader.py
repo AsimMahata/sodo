@@ -11,13 +11,12 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 import yt_dlp
 
 from .history import HistoryEntry, record_download, was_downloaded
+from .progress import SodoPostprocessorHook, SodoProgressHook
 
 # ---------------------------------------------------------------------------
 # Bundled FFmpeg
 # ---------------------------------------------------------------------------
 
-# sodo ships ffmpeg.exe + ffprobe.exe in sodo/bin/  (Windows only).
-# On other platforms the binaries won't exist and yt-dlp falls back to PATH.
 _BIN_DIR = Path.home() / "sodo" / "bin"
 
 
@@ -57,9 +56,9 @@ def is_ffmpeg_available() -> bool:
 
 def download_ffmpeg(dest_dir: Path) -> bool:
     """Download and extract FFmpeg/FFprobe binaries to dest_dir."""
+    import shutil
     import urllib.request
     import zipfile
-    import shutil
     import click
 
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -78,13 +77,13 @@ def download_ffmpeg(dest_dir: Path) -> bool:
     try:
         req = urllib.request.Request(
             url,
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
         )
         click.echo(f"Connecting to {url}...")
         with urllib.request.urlopen(req) as response:
-            total_size = int(response.info().get('Content-Length', 0))
+            total_size = int(response.info().get("Content-Length", 0))
             block_size = 1024 * 1024  # 1MB chunks
-            
+
             with click.progressbar(length=total_size, label="  Downloading FFmpeg") as bar:
                 with open(temp_zip, "wb") as f:
                     while True:
@@ -99,10 +98,9 @@ def download_ffmpeg(dest_dir: Path) -> bool:
             for member in z.infolist():
                 filename = Path(member.filename)
                 if filename.name in ("ffmpeg.exe", "ffprobe.exe"):
-                    # Extract directly to dest_dir without parent folders
                     with z.open(member) as source, open(dest_dir / filename.name, "wb") as target:
                         shutil.copyfileobj(source, target)
-                        
+
         click.echo(click.style(f"  ✓ FFmpeg successfully installed to {dest_dir}", fg="green"))
         return True
     except Exception as e:
@@ -114,8 +112,6 @@ def download_ffmpeg(dest_dir: Path) -> bool:
                 temp_zip.unlink()
             except OSError:
                 pass
-
-from .progress import SodoProgressHook
 
 
 # ---------------------------------------------------------------------------
@@ -130,56 +126,94 @@ def sanitize_filename(name: str) -> str:
     """Remove / replace characters that are illegal on Windows / POSIX."""
     name = _INVALID_CHARS.sub("_", name)
     name = _TRAILING.sub("", name)
-    return name[:200] or "audio"
+    return name[:200] or "media"
 
 
-# Keep only these query params for YouTube watch URLs — everything else
-# (list, start_radio, index, pp, si, …) is playlist/session noise.
 _YT_KEEP_PARAMS = {"v", "t"}
 _YT_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com"}
 
 
-def clean_url(url: str) -> str:
-    """Strip playlist / radio cruft from a YouTube URL.
+def is_playlist_url(url: str, *, playlist_mode: bool | None = None) -> bool:
+    """Return True if url represents or contains a playlist to download."""
+    if playlist_mode is False:
+        return False
+    if playlist_mode is True:
+        return True
 
-    Examples
-    --------
-    >>> clean_url("https://www.youtube.com/watch?v=abc123&list=RDabc123&start_radio=1")
-    'https://www.youtube.com/watch?v=abc123'
-    >>> clean_url("https://youtu.be/abc123?si=XYZ")
-    'https://youtu.be/abc123'
-    """
     try:
         parsed = urlparse(url)
     except Exception:
-        return url  # not a parseable URL — leave as-is
+        return False
 
     host = parsed.netloc.lower().lstrip("www.")
 
-    # youtu.be short links — video ID is the path, query params are noise
+    # Dedicated YouTube playlist endpoint
+    if host in _YT_HOSTS and parsed.path.startswith("/playlist"):
+        return True
+
+    # YouTube watch or short link with playlist parameter
+    if host in _YT_HOSTS or host in ("youtu.be", "www.youtu.be"):
+        qs = parse_qs(parsed.query)
+        list_param = qs.get("list", [""])[0]
+        if list_param:
+            # Algorithmic radio mixes (RD...) are auto-generated dynamic queues.
+            # Real playlists (PL, UU, FL, LP, OLAK5uy_, etc.) are treated as playlists.
+            if not list_param.startswith("RD"):
+                return True
+
+    # Other platform playlists / albums
+    if "/sets/" in parsed.path or "/album/" in parsed.path:
+        return True
+
+    return False
+
+
+def clean_url(url: str, *, allow_playlist: bool = True, force_playlist: bool = False) -> str:
+    """Clean and normalize a media URL, preserving or converting playlist URLs when appropriate."""
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return url
+
+    host = parsed.netloc.lower().lstrip("www.")
+
+    # youtu.be short links
     if host in ("youtu.be", "www.youtu.be"):
+        qs = parse_qs(parsed.query, keep_blank_values=False)
+        list_param = qs.get("list", [""])[0]
+        if (allow_playlist or force_playlist) and list_param and (force_playlist or not list_param.startswith("RD")):
+            return f"https://www.youtube.com/playlist?list={list_param}"
         return urlunparse(parsed._replace(query="", fragment=""))
 
-    # Full YouTube watch URLs
-    if host in _YT_HOSTS and parsed.path == "/watch":
+    # Full YouTube URLs
+    if host in _YT_HOSTS:
         qs = parse_qs(parsed.query, keep_blank_values=False)
-        kept = {k: v for k, v in qs.items() if k in _YT_KEEP_PARAMS}
-        new_query = urlencode({k: v[0] for k, v in kept.items()})
-        return urlunparse(parsed._replace(query=new_query, fragment=""))
+        list_param = qs.get("list", [""])[0]
 
-    # Anything else — return unchanged
+        # Dedicated playlist endpoint
+        if parsed.path.startswith("/playlist"):
+            if list_param:
+                return f"https://www.youtube.com/playlist?list={list_param}"
+            return url
+
+        # Watch URL: https://www.youtube.com/watch?v=...&list=...
+        if parsed.path == "/watch":
+            if (allow_playlist or force_playlist) and list_param and (force_playlist or not list_param.startswith("RD")):
+                return f"https://www.youtube.com/playlist?list={list_param}"
+
+            kept = {k: v for k, v in qs.items() if k in _YT_KEEP_PARAMS}
+            new_query = urlencode({k: v[0] for k, v in kept.items()})
+            return urlunparse(parsed._replace(query=new_query, fragment=""))
+
     return url
 
 
 # ---------------------------------------------------------------------------
-# MP3 download
-# ---------------------------------------------------------------------------
 # Format catalogue
 # ---------------------------------------------------------------------------
 
-# Each entry: label, type (audio|video), description, yt-dlp codec key
 FORMATS: dict[str, dict] = {
-    "mp3":  {"label": "MP3",  "type": "audio", "desc": "best quality VBR  (default)"},
+    "mp3":  {"label": "MP3",  "type": "audio", "desc": "best quality VBR (default)"},
     "flac": {"label": "FLAC", "type": "audio", "desc": "lossless"},
     "wav":  {"label": "WAV",  "type": "audio", "desc": "lossless PCM"},
     "m4a":  {"label": "M4A",  "type": "audio", "desc": "AAC audio"},
@@ -196,6 +230,9 @@ def build_opts_for_format(
     output_dir: Path,
     *,
     quiet: bool = False,
+    track_num: int | None = None,
+    total_tracks: int | None = None,
+    playlist_title: str = "",
 ) -> dict[str, Any]:
     """Return yt-dlp options dict for the requested format."""
     fmt = fmt.lower()
@@ -204,14 +241,24 @@ def build_opts_for_format(
 
     outtmpl = str(output_dir / "%(title)s.%(ext)s")
 
+    progress_hook = SodoProgressHook(
+        track_num=track_num,
+        total_tracks=total_tracks,
+        playlist_title=playlist_title,
+        quiet=quiet,
+    )
+    postprocessor_hook = SodoPostprocessorHook(fmt=fmt, quiet=quiet)
+
     base: dict[str, Any] = {
-        "outtmpl":          outtmpl,
-        "restrictfilenames": False,
-        "windowsfilenames":  True,
-        "progress_hooks":   [SodoProgressHook()],
-        "quiet":            quiet,
-        "no_warnings":      quiet,
-        "keepvideo":        False,
+        "outtmpl":              outtmpl,
+        "restrictfilenames":    False,
+        "windowsfilenames":     True,
+        "progress_hooks":       [progress_hook],
+        "postprocessor_hooks":  [postprocessor_hook],
+        "quiet":                True,
+        "no_warnings":          quiet,
+        "keepvideo":            False,
+        "ignoreerrors":         True,
         "js_runtimes": {
             "node": {},
             "deno": {},
@@ -238,8 +285,8 @@ def build_opts_for_format(
             {"key": "FFmpegMetadata", "add_metadata": True},
         ]
     else:
-        # video formats
-        base["format"] = "bestvideo+bestaudio/best"
+        # video formats (MP4, WEBM)
+        base["format"] = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best"
         base["addmetadata"] = True
         base["merge_output_format"] = fmt
         base["postprocessors"] = [
@@ -249,7 +296,6 @@ def build_opts_for_format(
     return base
 
 
-# Keep old name as an alias so nothing else breaks
 def build_mp3_opts(urls: list[str], output_dir: Path, *, quiet: bool = False) -> dict[str, Any]:
     return build_opts_for_format("mp3", output_dir, quiet=quiet)
 
@@ -261,7 +307,7 @@ DOWNLOAD_SKIPPED = "skipped"
 
 
 def _extract_title(info: object) -> str:
-    """Pull the video title out of a yt-dlp info dict (handles playlists)."""
+    """Pull the title out of a yt-dlp info dict."""
     if not isinstance(info, dict):
         return ""
     if "entries" in info:
@@ -271,27 +317,215 @@ def _extract_title(info: object) -> str:
 
 
 def _extract_filepath(info: object) -> str:
-    """Extract the final saved file path (with extension) from a yt-dlp info dict.
-
-    After postprocessing (e.g. FFmpeg → MP3 conversion), yt-dlp stores the
-    real output path in ``requested_downloads[0]['filepath']``.
-    """
+    """Extract the final saved file path from a yt-dlp info dict."""
     if not isinstance(info, dict):
         return ""
-    # Primary: postprocessed path lives here
     requested = info.get("requested_downloads")
     if isinstance(requested, list) and requested:
         for key in ("filepath", "filename"):
             fp = requested[0].get(key, "")
             if fp:
                 return str(fp)
-    # Fallback: top-level keys
     for key in ("filepath", "filename", "_filename"):
         fp = info.get(key, "")
         if fp:
             return str(fp)
     return ""
 
+
+# ---------------------------------------------------------------------------
+# Playlist Downloader
+# ---------------------------------------------------------------------------
+
+def _download_playlist(
+    url: str,
+    output_dir: Path,
+    *,
+    fmt: str = DEFAULT_FMT,
+    quiet: bool = False,
+    config_key: str = "",
+    force: bool = False,
+) -> list[dict]:
+    """Download an entire playlist track by track with rich progress UI and global deduplication."""
+    folder_str = str(output_dir.resolve())
+    results: list[dict] = []
+
+    flat_opts: dict[str, Any] = {
+        "extract_flat": True,
+        "quiet": True,
+        "no_warnings": True,
+        "js_runtimes": {"node": {}, "deno": {}, "quickjs": {}},
+    }
+    ffmpeg_dir = _ffmpeg_dir()
+    if ffmpeg_dir:
+        flat_opts["ffmpeg_location"] = ffmpeg_dir
+
+    if not quiet:
+        print("[sodo] ⏳ Fetching playlist information...")
+
+    with yt_dlp.YoutubeDL(flat_opts) as ydl:
+        try:
+            info = ydl.extract_info(url, download=False)
+        except Exception as exc:
+            err = str(exc)
+            print(f"\n[sodo] ✗ Could not load playlist {url}: {err}", file=sys.stderr)
+            return [{
+                "url": url, "cleaned": url,
+                "status": DOWNLOAD_FAIL,
+                "title": "Playlist",
+                "filepath": "",
+                "error": err,
+                "folder": folder_str,
+                "skipped_entry": None,
+            }]
+
+    if not info:
+        return []
+
+    raw_entries = info.get("entries")
+    if raw_entries is None:
+        single_opts = build_opts_for_format(fmt, output_dir, quiet=quiet)
+        with yt_dlp.YoutubeDL(single_opts) as ydl:
+            try:
+                single_info = ydl.extract_info(url, download=True)
+                title = _extract_title(single_info)
+                filepath = _extract_filepath(single_info)
+                if config_key:
+                    record_download(url, config_key, output_dir, title=title)
+                return [{
+                    "url": url, "cleaned": url,
+                    "status": DOWNLOAD_OK,
+                    "title": title,
+                    "filepath": filepath,
+                    "error": "", "folder": folder_str,
+                    "skipped_entry": None,
+                }]
+            except Exception as exc:
+                return [{
+                    "url": url, "cleaned": url,
+                    "status": DOWNLOAD_FAIL,
+                    "title": "", "filepath": "",
+                    "error": str(exc), "folder": folder_str,
+                    "skipped_entry": None,
+                }]
+
+    entries = [e for e in raw_entries if e and isinstance(e, dict)]
+    total = len(entries)
+    playlist_title = info.get("title") or "YouTube Playlist"
+    uploader = info.get("uploader") or info.get("channel") or info.get("uploader_id") or ""
+    fmt_label = FORMATS.get(fmt, {}).get("label", fmt.upper())
+    fmt_desc  = FORMATS.get(fmt, {}).get("desc", "")
+
+    if not quiet:
+        print("")
+        print("  " + "═" * 70)
+        print(f"  📋 Playlist : {playlist_title}")
+        if uploader:
+            print(f"  👤 Channel  : {uploader}")
+        print(f"  🔢 Total    : {total} track{'s' if total != 1 else ''}")
+        print(f"  📁 Output   : {output_dir}")
+        print(f"  🎬 Format   : {fmt_label}  ({fmt_desc})")
+        print("  " + "═" * 70)
+        print("")
+
+    for idx, entry in enumerate(entries, 1):
+        track_id = entry.get("id") or ""
+        track_title = entry.get("title") or f"Track {idx}"
+        track_url = entry.get("url") or (f"https://www.youtube.com/watch?v={track_id}" if track_id else "")
+        if not track_url.startswith(("http://", "https://")):
+            track_url = f"https://www.youtube.com/watch?v={track_id or entry.get('url')}"
+
+        # Global history deduplication
+        if config_key and not force:
+            from .history import was_downloaded_globally
+            skipped_entry = was_downloaded_globally(track_url, config_key)
+            if skipped_entry is not None:
+                if not quiet:
+                    dest = skipped_entry.get("folder", "unknown")
+                    print(f"  ⏭  [{idx}/{total}] Skipped: {track_title[:55]} (already at {dest})")
+                results.append({
+                    "url": track_url,
+                    "cleaned": track_url,
+                    "status": DOWNLOAD_SKIPPED,
+                    "title": skipped_entry.get("title") or track_title,
+                    "filepath": "",
+                    "error": "",
+                    "folder": skipped_entry.get("folder", folder_str),
+                    "skipped_entry": skipped_entry,
+                    "playlist": playlist_title,
+                })
+                continue
+
+        track_opts = build_opts_for_format(
+            fmt,
+            output_dir,
+            quiet=quiet,
+            track_num=idx,
+            total_tracks=total,
+            playlist_title=playlist_title,
+        )
+        track_opts["noplaylist"] = True
+
+        with yt_dlp.YoutubeDL(track_opts) as ydl:
+            try:
+                t_info = ydl.extract_info(track_url, download=True)
+                final_title = _extract_title(t_info) or track_title
+                final_path = _extract_filepath(t_info)
+                if config_key:
+                    record_download(track_url, config_key, output_dir, title=final_title)
+                if not quiet:
+                    size_mb = ""
+                    if final_path and Path(final_path).exists():
+                        size_mb = f" ({Path(final_path).stat().st_size / 1_048_576:.1f} MB)"
+                    print(f"  ✓ [{idx}/{total}] {final_title}{size_mb} • {fmt_label}")
+                results.append({
+                    "url": track_url,
+                    "cleaned": track_url,
+                    "status": DOWNLOAD_OK,
+                    "title": final_title,
+                    "filepath": final_path,
+                    "error": "",
+                    "folder": folder_str,
+                    "skipped_entry": None,
+                    "playlist": playlist_title,
+                })
+            except yt_dlp.utils.DownloadError as exc:
+                err = str(exc)
+                if not quiet:
+                    print(f"\n  ✗ [{idx}/{total}] Failed: {track_title}\n       {err}", file=sys.stderr)
+                results.append({
+                    "url": track_url,
+                    "cleaned": track_url,
+                    "status": DOWNLOAD_FAIL,
+                    "title": track_title,
+                    "filepath": "",
+                    "error": err,
+                    "folder": folder_str,
+                    "skipped_entry": None,
+                    "playlist": playlist_title,
+                })
+            except Exception as exc:  # noqa: BLE001
+                err = str(exc)
+                if not quiet:
+                    print(f"\n  ✗ [{idx}/{total}] Unexpected error: {track_title}\n       {err}", file=sys.stderr)
+                results.append({
+                    "url": track_url,
+                    "cleaned": track_url,
+                    "status": DOWNLOAD_FAIL,
+                    "title": track_title,
+                    "filepath": "",
+                    "error": err,
+                    "folder": folder_str,
+                    "skipped_entry": None,
+                    "playlist": playlist_title,
+                })
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Public Download Function
+# ---------------------------------------------------------------------------
 
 def download_audio(
     urls: list[str],
@@ -301,48 +535,68 @@ def download_audio(
     quiet: bool = False,
     config_key: str = "",
     force: bool = False,
+    playlist_mode: bool | None = None,
 ) -> list[dict]:
-    """
-    Download audio/video from *urls*.
-
-    Each URL is cleaned (playlist params stripped) before use.
-    Returns a list of dicts: url, cleaned, status, title, error, folder, skipped_entry.
-    """
+    """Download audio or video from *urls*, supporting playlists and individual tracks."""
     output_dir.mkdir(parents=True, exist_ok=True)
     results: list[dict] = []
     folder_str = str(output_dir.resolve())
-    opts = build_opts_for_format(fmt, output_dir, quiet=quiet)
 
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        for url in urls:
-            cleaned = clean_url(url)
-            if cleaned != url and not quiet:
-                print(f"[sodo] cleaned URL: {cleaned}")
+    for url in urls:
+        is_pl = is_playlist_url(url, playlist_mode=playlist_mode)
+        cleaned = clean_url(
+            url,
+            allow_playlist=(playlist_mode is not False),
+            force_playlist=(playlist_mode is True),
+        )
+        if cleaned != url and not quiet:
+            print(f"[sodo] cleaned URL: {cleaned}")
 
-            # --- history check -----------------------------------------------
-            if config_key and not force:
-                from .history import was_downloaded_globally
-                # As per Phase 3, we ALWAYS check the global master index to prevent system-wide duplicates.
-                entry = was_downloaded_globally(cleaned, config_key)
-                if entry is not None:
-                    if not quiet:
-                        print(f"[sodo] \u23ed Skipped: {cleaned} (Globally available at {entry.get('folder', 'unknown')})")
-                    results.append({
-                        "url": url, "cleaned": cleaned,
-                        "status": DOWNLOAD_SKIPPED,
-                        "title": entry.get("title", ""),
-                        "error": "", "folder": entry.get("folder", ""),
-                        "skipped_entry": entry,
-                    })
-                    continue
+        if is_pl:
+            pl_results = _download_playlist(
+                cleaned,
+                output_dir,
+                fmt=fmt,
+                quiet=quiet,
+                config_key=config_key,
+                force=force,
+            )
+            results.extend(pl_results)
+            continue
 
-            # --- actual download ---------------------------------------------
+        # Single track download
+        if config_key and not force:
+            from .history import was_downloaded_globally
+            entry = was_downloaded_globally(cleaned, config_key)
+            if entry is not None:
+                if not quiet:
+                    print(f"[sodo] ⏭  Skipped: {cleaned} (Globally available at {entry.get('folder', 'unknown')})")
+                results.append({
+                    "url": url, "cleaned": cleaned,
+                    "status": DOWNLOAD_SKIPPED,
+                    "title": entry.get("title", ""),
+                    "filepath": "",
+                    "error": "", "folder": entry.get("folder", ""),
+                    "skipped_entry": entry,
+                })
+                continue
+
+        opts = build_opts_for_format(fmt, output_dir, quiet=quiet)
+        opts["noplaylist"] = True
+
+        with yt_dlp.YoutubeDL(opts) as ydl:
             try:
-                info     = ydl.extract_info(cleaned, download=True)
-                title    = _extract_title(info)
+                info = ydl.extract_info(cleaned, download=True)
+                title = _extract_title(info)
                 filepath = _extract_filepath(info)
                 if config_key:
                     record_download(cleaned, config_key, output_dir, title=title)
+                if not quiet:
+                    size_mb = ""
+                    if filepath and Path(filepath).exists():
+                        size_mb = f" ({Path(filepath).stat().st_size / 1_048_576:.1f} MB)"
+                    fmt_label = FORMATS.get(fmt, {}).get("label", fmt.upper())
+                    print(f"  ✓ {title}{size_mb} • {fmt_label}")
                 results.append({
                     "url": url, "cleaned": cleaned,
                     "status": DOWNLOAD_OK,
@@ -353,22 +607,21 @@ def download_audio(
                 })
             except yt_dlp.utils.DownloadError as exc:
                 err = str(exc)
-                print(f"\n[sodo] \u2717 Failed: {cleaned}\n       {err}", file=sys.stderr)
+                print(f"\n[sodo] ✗ Failed: {cleaned}\n       {err}", file=sys.stderr)
                 results.append({
                     "url": url, "cleaned": cleaned,
                     "status": DOWNLOAD_FAIL,
-                    "title": "", "error": err, "folder": folder_str,
+                    "title": "", "filepath": "", "error": err, "folder": folder_str,
                     "skipped_entry": None,
                 })
             except Exception as exc:  # noqa: BLE001
                 err = str(exc)
-                print(f"\n[sodo] \u2717 Unexpected error for {cleaned}: {err}", file=sys.stderr)
+                print(f"\n[sodo] ✗ Unexpected error for {cleaned}: {err}", file=sys.stderr)
                 results.append({
                     "url": url, "cleaned": cleaned,
                     "status": DOWNLOAD_FAIL,
-                    "title": "", "error": err, "folder": folder_str,
+                    "title": "", "filepath": "", "error": err, "folder": folder_str,
                     "skipped_entry": None,
                 })
 
     return results
-

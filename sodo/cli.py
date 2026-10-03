@@ -41,7 +41,7 @@ def _banner() -> None:
     click.echo(
         click.style("  sodo ", fg="cyan", bold=True)
         + click.style(f"v{__version__}", fg="bright_black")
-        + "  \u2014 YouTube \u2192 MP3 downloader"
+        + "  — YouTube → MP3 & MP4 downloader"
     )
     click.echo("")
 
@@ -967,6 +967,12 @@ def _pick_format() -> str:
 @click.option("--sync",       "sync_ws",    is_flag=True, default=False, help="Find moved files and repair registry.")
 # ── download options ───────────────────────────────────────────────────────
 @click.option("-m", "--music", is_flag=True, default=False, help="Download as MP3 (default, same as no flag).")
+@click.option("-v", "--video", is_flag=True, default=False, help="Download as MP4 video (shortcut for --fmt mp4).")
+@click.option("--mp4", is_flag=True, default=False, help="Download as MP4 video (alias for -v).")
+@click.option("-p", "--playlist", "playlist_mode", flag_value=True, default=None,
+              help="Download full playlist if URL points to or contains a playlist.")
+@click.option("--no-playlist", "playlist_mode", flag_value=False, default=None,
+              help="Download single track only, even if URL contains a playlist.")
 @click.option("--skip",       is_flag=True, default=False, help="Skip workspace requirement and download globally.")
 @click.option("-f", "--force", is_flag=True, default=False, help="Force redownload even if globally downloaded.")
 @click.option("--links",      is_flag=True, default=False, help="Print all downloaded URLs separated by spaces.")
@@ -988,6 +994,9 @@ def _pick_format() -> str:
 def main(
     urls: tuple[str, ...],
     music: bool,
+    video: bool,
+    mp4: bool,
+    playlist_mode: bool | None,
     fmt: str,
     pick: bool,
     output: str | None,
@@ -1029,7 +1038,7 @@ def main(
     uninstall_bin: bool,
 ) -> None:
     """
-    Download YouTube audio as MP3.
+    Download YouTube media as MP3 or MP4.
 
     \b
     IMPORTANT — always quote URLs in PowerShell:
@@ -1038,6 +1047,11 @@ def main(
     \b
     Quick reference
     ---------------
+      sodo "URL"                  download audio (MP3)
+      sodo -v "URL"               download video (MP4)
+      sodo -p "URL"               download full playlist (MP3)
+      sodo -v -p "URL"            download full playlist as video (MP4)
+      sodo --no-playlist "URL"    download single track only (even if in playlist)
       sodo "URL"                  download
       sodo --history              show history  (--full for full paths, --update to fetch titles)
       sodo --init                 initialize a multimedia workspace in current folder
@@ -1211,9 +1225,11 @@ def main(
 
     _ensure_ffmpeg()
 
-    # Format selection: --pick > --fmt > default mp3
+    # Format selection: video/mp4 > --pick > --fmt > default mp3
     chosen_fmt = DEFAULT_FMT
-    if pick:
+    if video or mp4:
+        chosen_fmt = "mp4"
+    elif pick:
         chosen_fmt = _pick_format()
     elif fmt != DEFAULT_FMT:
         chosen_fmt = fmt
@@ -1226,6 +1242,10 @@ def main(
         + click.style(f"  ({FORMATS[chosen_fmt]['desc']})", fg="bright_black")
     )
     click.echo(f"  URLs   \u2192 {len(urls)}")
+    if playlist_mode is True:
+        click.echo(click.style("  Target \u2192 Full Playlist (-p)", fg="magenta"))
+    elif playlist_mode is False:
+        click.echo(click.style("  Target \u2192 Single track only (--no-playlist)", fg="bright_black"))
     if skip:
         click.echo(click.style("  Mode   \u2192 Global (--skip)", fg="yellow"))
     else:
@@ -1233,7 +1253,15 @@ def main(
     click.echo("")
 
     start   = time.perf_counter()
-    results = download_audio(list(urls), out_dir, fmt=chosen_fmt, quiet=quiet, config_key=config_key, force=force)
+    results = download_audio(
+        list(urls),
+        out_dir,
+        fmt=chosen_fmt,
+        quiet=quiet,
+        config_key=config_key,
+        force=force,
+        playlist_mode=playlist_mode,
+    )
     elapsed = time.perf_counter() - start
 
     _dual_write_results(results, ws, skip, config_key, out_dir, ws_str)

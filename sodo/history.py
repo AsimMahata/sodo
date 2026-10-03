@@ -98,6 +98,14 @@ def was_downloaded(url: str, config_key: str) -> HistoryEntry | None:
     return data.get(url, {}).get(config_key)  # type: ignore[return-value]
 
 
+_VIDEO_FMTS = {"mp4", "webm"}
+_AUDIO_FMTS = {"mp3", "flac", "wav", "m4a", "opus"}
+
+
+def _media_type(fmt: str) -> str:
+    return "video" if fmt.lower() in _VIDEO_FMTS else "audio"
+
+
 def was_downloaded_globally(url: str, config_key: str) -> HistoryEntry | None:
     """Always check the global master history, ignoring any local workspace overrides."""
     g_dir = _sodo_dir()
@@ -109,8 +117,26 @@ def was_downloaded_globally(url: str, config_key: str) -> HistoryEntry | None:
         url_data = data.get(url)
         if not url_data:
             return None
-        # Return the first entry we find for this URL, regardless of the folder/config it was downloaded to.
-        # This prevents the exact same URL from being downloaded into multiple different workspaces.
+
+        target_fmt = config_key.split("|", 1)[0].lower() if config_key else ""
+        target_type = _media_type(target_fmt) if target_fmt else ""
+
+        # 1. Exact match on config_key
+        if config_key and config_key in url_data:
+            return url_data[config_key]
+
+        # 2. Match on format or same media type (audio vs video)
+        for k, entry in url_data.items():
+            existing_fmt = k.split("|", 1)[0].lower()
+            if target_fmt and existing_fmt == target_fmt:
+                return entry
+            if target_type and _media_type(existing_fmt) == target_type:
+                return entry
+
+        # If target has a specific media type and none matches (e.g. video requested, only audio exists), don't skip
+        if target_type:
+            return None
+
         first_key = next(iter(url_data))
         return url_data[first_key]
     except Exception:
